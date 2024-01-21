@@ -1,11 +1,11 @@
-#/usr/bin/python2
+#/usr/bin/python3
 # coding: utf-8
 
 import numpy as np
 import codecs
 from hyperparams import Hyperparams as hp
 
-def load_vocab():
+def load_vocab_list():
     hanguls, hanjas = set(), set()
     for line in codecs.open('data/bible_ko.tsv', 'r', 'utf-8'):
         hangul_sent, hanja_sent = line.strip().split("\t")
@@ -13,8 +13,14 @@ def load_vocab():
             hanguls.add(hangul)
             hanjas.add(hanja)
     hanjas = hanjas - hanguls
-    hanguls = ["<EMP>", "<OOV>"] + sorted(list(hanguls))
-    hanjas = ["<EMP>", "_"] + sorted(list(hanjas))
+    hanguls = sorted(list(hanguls))
+    hanjas = sorted(list(hanjas))
+    return hanguls, hanjas
+
+def load_vocab():
+    hanguls, hanjas = load_vocab_list()
+    hanguls = ['', '[UNK]'] + hanguls
+    hanjas = ['', '[UNK]'] + hanjas
 
     hangul2idx = {hangul: idx for idx, hangul in enumerate(hanguls)}
     idx2hangul = {idx: hangul for idx, hangul in enumerate(hanguls)}

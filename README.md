@@ -1,11 +1,13 @@
 # Hangul to Chinse Character Conversion
 
+Note by Lena: This version is based on Kyubyong's great work, [h2h_converter](https://github.com/Kyubyong/h2h_converter), as rewritten in Python 3.10+ and Tensorflow 2.15.0+. Any new notes I added is marked with my name.
+
 Around 2/3 of Korean words are Sino-Korean. For that reason, although the official script of the Korean language is Hangul, Chinese characters are still widely used. Converting Chinese characters (_Hanja_ in Korean) to Hangul is trivial because most _Hanjas_ have a single equivalent of Hangul. However, the reverse is not. There has been a project, [_UTagger_](http://203.250.77.242:5900/utagger/), for Hangul-to-Hanja conversion. I use neural networks to tackle the task.
 
 ## Requirements
-  * numpy >= 1.11.1
-  * TensorFlow == 1.3
-  * tqdm
+Note by Lena: this paragraph is rewritten.
+
+See `requirements.txt`. Simply install them with `python3 -m pip install -r requirements.txt`.
 
 ## Data
 
@@ -20,6 +22,45 @@ Bidirectional GRUs.
 ## Training
   * Adjust hyperparameters in the `hyperparams.py` if necessary.
   * Run `python train.py`.
+
+## Predicting
+Note by Lena: this paragraph is newly added.
+
+```
+>>> from predict import H2HPredictor
+>>> p = H2HPredictor()
+>>> string = "그 성곽을 척량하매 일백 사십 사 규빗이니 사람의 척량 곧 천사의 척량이라"
+>>> p(string)
+'그 城廓을 尺量하매 一百 四十 사 규빗이니 사람의 尺量 곧 天使의 尺量이라'
+>>> strings = [
+...     "그 성곽을 척량하매 일백 사십 사 규빗이니 사람의 척량 곧 천사의 척량이라",
+...     "그 열 두 문은 열 두 진주니 문마다 한 진주요 성의 길은 맑은 유리 같은 정금이더라",
+... ]
+>>> p.convert(strings)
+1/1 [==============================] - 1s 1s/step
+['그 城廓을 尺量하매 一百 四十 사 규빗이니 사람의 尺量 곧 天使의 尺量이라', '그 열 두 門은 열 두 眞主니 門마다 한 眞主요 城의 길은 맑은 유리 같은 情金이더라']
+>>> import time
+>>> import codecs
+>>> strings = []
+>>> i = 0
+>>> for line in codecs.open('data/bible_ko.tsv', 'r', 'utf-8'):
+...     if len(line) <= 150:
+...         strings.append(line.strip().split("\t")[0])
+...         i += 1
+...     if i >= 1000:
+...         break
+...
+>>> strings[962]
+'내가 소리질러 불렀더니 그가 그 옷을 내게 버려두고 도망하여 나갔나이다'
+>>> t = time.time()
+>>> c = p.convert(strings)
+32/32 [==============================] - 2s 7ms/step
+>>> dt = time.time() - t
+>>> dt
+3.402768135070801
+>>> c[962]
+'내가 소리질러 불렀더니 그가 그 옷을 내게 버려두고 逃亡하여 나갔나이다'
+```
 
 ## Results
 After 10 epochs, I got the accuracy of 0.99 for validation data. Details are available in the `eval.txt`.

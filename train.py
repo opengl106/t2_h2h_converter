@@ -11,34 +11,14 @@ import pandas as pd
 import tensorflow as tf
 from tensorflow import keras
 
+from common import masked_accuracy, masked_loss
 from data_load import load_vocab, load_data
 from hyperparams import Hyperparams as hp
+
 
 # Load vocab
 hangul2idx, idx2hangul, hanja2idx, idx2hanja = load_vocab()
 
-def masked_loss(label, logit):
-    loss_indexwise = keras.losses.SparseCategoricalCrossentropy(
-        from_logits=True,
-        reduction=keras.losses.Reduction.NONE,
-    )
-    unmasked = loss_indexwise(label, logit)
-
-    # Mask zeros where length of expected label sequences is variable.
-    mask = tf.cast(label != 0, dtype=unmasked.dtype)
-    loss = unmasked * mask
-
-    # Probability normalization
-    return tf.reduce_sum(loss) / tf.reduce_sum(mask)
-
-def masked_accuracy(label, logit):
-    pred = tf.cast(tf.argmax(logit, axis=-1), dtype=label.dtype)
-    unmasked = tf.cast(pred == label, dtype=tf.int32)
-
-    mask = tf.cast(label != 0, dtype=tf.int32)
-    hits = unmasked * mask
-
-    return tf.reduce_sum(hits) / tf.reduce_sum(mask)
 
 class H2HModel():
     """
