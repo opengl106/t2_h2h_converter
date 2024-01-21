@@ -1,96 +1,150 @@
 # -*- coding: utf-8 -*-
-#/usr/bin/python2
+#/usr/bin/python3
 '''
 Training.
 '''
 
-from data_load import load_vocab, load_data
-import tensorflow as tf
-import tqdm
-from hyperparams import Hyperparams as hp
 import codecs
+import os
+
+import pandas as pd
+import tensorflow as tf
+from tensorflow import keras
+
+from data_load import load_vocab, load_data
+from hyperparams import Hyperparams as hp
 
 # Load vocab
 hangul2idx, idx2hangul, hanja2idx, idx2hanja = load_vocab()
 
-class Graph():
-    '''Builds a model graph'''
-    def __init__(self):
-        self.graph = tf.Graph()
-        with self.graph.as_default():
-            self.x = tf.placeholder(tf.int32, shape=(None, hp.maxlen), name="hangul_sent")
-            self.y = tf.placeholder(tf.int32, shape=(None, hp.maxlen), name="hanja_sent")
+def masked_loss(label, logit):
+    loss_indexwise = keras.losses.SparseCategoricalCrossentropy(
+        from_logits=True,
+        reduction=keras.losses.Reduction.NONE,
+    )
+    unmasked = loss_indexwise(label, logit)
 
-            # Sequence lengths
-            self.seqlens = tf.reduce_sum(tf.sign(self.x), -1)
+    # Mask zeros where length of expected label sequences is variable.
+    mask = tf.cast(label != 0, dtype=unmasked.dtype)
+    loss = unmasked * mask
 
-            # Embedding
-            self.inputs = tf.one_hot(self.x, len(hangul2idx))
+    # Probability normalization
+    return tf.reduce_sum(loss) / tf.reduce_sum(mask)
 
-            # Network
-            cell_fw = tf.nn.rnn_cell.GRUCell(hp.hidden_units)
-            cell_bw = tf.nn.rnn_cell.GRUCell(hp.hidden_units)
-            outputs, _ = tf.nn.bidirectional_dynamic_rnn(cell_fw, cell_bw, self.inputs, self.seqlens, dtype=tf.float32)
-            logits = tf.layers.dense(tf.concat(outputs, -1), len(hanja2idx))
-            self.preds = tf.to_int32(tf.arg_max(logits, -1))
+def masked_accuracy(label, logit):
+    pred = tf.cast(tf.argmax(logit, axis=-1), dtype=label.dtype)
+    unmasked = tf.cast(pred == label, dtype=tf.int32)
 
-            ## metric
-            hits = tf.to_int32(tf.equal(self.preds, self.y))
-            hits *= tf.sign(self.y)
+    mask = tf.cast(label != 0, dtype=tf.int32)
+    hits = unmasked * mask
 
-            self.acc = tf.reduce_sum(hits) / tf.reduce_sum(self.seqlens)
+    return tf.reduce_sum(hits) / tf.reduce_sum(mask)
 
-            ## Loss and training
-            loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=self.y)
-            self.mean_loss = tf.reduce_mean(loss)
-            self.global_step = tf.Variable(0, name='global_step', trainable=False)
-            optimizer = tf.train.AdamOptimizer(hp.learning_rate)
-            self.train_op = optimizer.minimize(self.mean_loss, global_step=self.global_step)
+class H2HModel():
+    """
+    A tensorflow 2 version of the original model.
+    """
+    def __init__(self, model=None):
+        if model:
+            self.model = model
+            return None
 
-            # Summary
-            tf.summary.scalar("mean_loss", self.mean_loss)
-            tf.summary.scalar("acc", self.acc)
+        self.model = keras.Sequential([
+            keras.layers.Input(shape=[hp.maxlen], name="hangul_sent", dtype=tf.int32),
+            # Mask zeros in the variable length input sequences.
+            keras.layers.Embedding(len(hangul2idx), hp.hidden_units, mask_zero=True),
+            keras.layers.Bidirectional(
+                layer=keras.layers.GRU(
+                    hp.hidden_units,
+                    return_sequences=True,
+                    return_state=False,
+                ),
+                merge_mode='concat',
+            ),
+            keras.layers.Dense(len(hanja2idx)),
+        ])
 
-            self.merged = tf.summary.merge_all()
+        optimizer = keras.optimizers.Adam(
+            learning_rate=hp.learning_rate,
+        )
+        metrics = [
+            masked_accuracy,
+            masked_loss,
+        ]
+        self.model.compile(
+            optimizer=optimizer,
+            loss=masked_loss,
+            metrics=metrics,
+        )
+
+        return None
+
+    def predict(self, data, dtype=tf.int32, batch_size=hp.batch_size):
+        logit = self.model.predict(data, batch_size=batch_size)
+        pred = tf.cast(tf.argmax(logit, axis=-1), dtype=dtype)
+        return pred
 
 
 if __name__ == '__main__':
     # Data loading
     X_train, Y_train = load_data(mode="train")
+    train_data_x = tf.data.Dataset.from_tensor_slices(X_train)
+    train_data_y = tf.data.Dataset.from_tensor_slices(Y_train)
+    dataset = tf.data.Dataset.zip((train_data_x, train_data_y)).batch(hp.batch_size)
+
+    # Model loading
+    if os.path.exists(hp.logdir + "/model.keras"):
+        print(f"Loading dataset from {hp.logdir}/model.keras")
+        model = keras.models.load_model(hp.logdir + "/model.keras", custom_objects={
+            'masked_accuracy': masked_accuracy,
+            'masked_loss': masked_loss,
+        })
+        keras.backend.set_value(model.optimizer.learning_rate, hp.learning_rate)
+        m = H2HModel(model)
+    else:
+        m = H2HModel()
+
+    # Training
+    checkpoint_path = hp.logdir + "/cp.ckpt"
+    cp_callback = tf.keras.callbacks.ModelCheckpoint(
+        filepath=checkpoint_path,
+        save_weights_only=True,
+        verbose=1
+    )
+    history = m.model.fit(
+        dataset,
+        epochs=hp.num_epochs,
+        callbacks=[cp_callback],
+    )
+
+    if not os.path.exists(hp.logdir):
+        os.mkdir(hp.logdir)
+    m.model.save(hp.logdir + "/model.keras")
+
+    # Logging
+    hist_df = pd.DataFrame(history.history)
+    hist_json_file = hp.logdir + "/history.json"
+    with open(hist_json_file, mode='w') as f:
+        hist_df.to_json(f)
+    hist_csv_file = hp.logdir + "/history.csv"
+    with open(hist_csv_file, mode='w') as f:
+        hist_df.to_csv(f)
+
+    # Evaluating
     x_val, y_val = load_data(mode="val")
-
-    # Session
-    g = Graph()
-    with g.graph.as_default():
-        # Training
-        sv = tf.train.Supervisor(logdir=hp.logdir,
-                                 save_model_secs=0)
-        with sv.managed_session() as sess:
-            with codecs.open("eval.txt", 'w', 'utf-8') as fout:
-                for epoch in range(hp.num_epochs):
-                    for i in tqdm.tqdm(range(0, len(X_train), hp.batch_size), total=len(X_train)//hp.batch_size):
-                        x_train = X_train[i:i+hp.batch_size]
-                        y_train = Y_train[i:i+hp.batch_size]
-                        sess.run(g.train_op, {g.x: x_train, g.y: y_train})
-
-                    # Write checkpoint files at every epoch
-                    gs = sess.run(g.global_step)
-                    sv.saver.save(sess, hp.logdir + '/model_epoch_%02d_gs_%d' % (epoch, gs))
-
-                    # Evaluation
-                    preds, acc = sess.run([g.preds, g.acc], {g.x: x_val, g.y: y_val})
-                    fout.write(u"\nepoch = {}\n".format(epoch+1))
-                    for xx, yy, pred in zip(x_val, y_val, preds): # sentence-wise
-                        inputs, expected, got = [], [], []
-                        for xxx, yyy, ppp in zip(xx, yy, pred):  # character-wise
-                            if xxx==0: break
-                            inputs.append(idx2hangul[xxx])
-                            expected.append(idx2hanja[yyy] if yyy!=1 else idx2hangul[xxx])
-                            got.append(idx2hanja[ppp] if ppp != 1 else idx2hangul[xxx])
-
-                        fout.write(u"* Input   : {}\n".format("".join(inputs)))
-                        fout.write(u"* Expected: {}\n".format("".join(expected)))
-                        fout.write(u"* Got     : {}\n".format("".join(got)))
-                        fout.write("\n")
-                    fout.write(u"\naccuracy = {}".format(acc))
-                    fout.write("-----------------\n")
+    val_data_x = tf.data.Dataset.from_tensor_slices(x_val)
+    val_data_y = tf.data.Dataset.from_tensor_slices(y_val)
+    preds = m.predict(x_val)
+    pred_data = tf.data.Dataset.from_tensor_slices(preds)
+    with codecs.open(hp.logdir + "/eval.txt", 'w', 'utf-8') as fout:
+        for xx, yy, pred in tf.data.Dataset.zip(val_data_x, val_data_y, pred_data): # sentence-wise
+            inputs, expected, got = [], [], []
+            for xxx, yyy, ppp in zip(xx, yy, pred):  # character-wise
+                if int(xxx)==0: break
+                inputs.append(idx2hangul[int(xxx)])
+                expected.append(idx2hanja[int(yyy)] if int(yyy)!=1 else idx2hangul[int(xxx)])
+                got.append(idx2hanja[int(ppp)] if int(ppp) != 1 else idx2hangul[int(xxx)])
+            fout.write(u"* Input   : {}\n".format("".join(inputs)))
+            fout.write(u"* Expected: {}\n".format("".join(expected)))
+            fout.write(u"* Got     : {}\n".format("".join(got)))
+            fout.write("\n")
