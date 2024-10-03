@@ -1,3 +1,0 @@
-pandas == 2.2.0
-pyyaml == 6.0.1
-tensorflow[and-cuda] == 2.15.0.post1
